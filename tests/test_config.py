@@ -2,10 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pvepci import config
 from pvepci.config import ConfigError
+
+
+def find_example() -> Path | None:
+    """Locate config.example.yaml by walking up from this file.
+
+    Not a fixed ../ hop: under pybuild the suite runs from a copy in
+    .pybuild/<interp>/build/tests, where the example is not copied alongside.
+    Walking up still reaches the source tree that holds it.
+    """
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "config.example.yaml"
+        if candidate.is_file():
+            return candidate
+    return None
 
 VALID = """
 pools:
@@ -156,11 +172,11 @@ profiles:
 
 
 class TestExampleConfig:
-    def test_shipped_example_is_valid(self, tmp_path):
+    def test_shipped_example_is_valid(self):
         """The example we tell users to copy must actually load."""
-        from pathlib import Path
-
-        example = Path(__file__).parent.parent / "config.example.yaml"
+        example = find_example()
+        if example is None:
+            pytest.skip("config.example.yaml not present in this build tree")
         cfg = config.load(example)
         assert "gpu" in cfg.pools
         assert set(cfg.profiles) == {"all-to-one", "split-2-1", "one-each"}
