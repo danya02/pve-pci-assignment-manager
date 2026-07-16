@@ -1,0 +1,97 @@
+name: build-deb
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Debian 13 (trixie) is what PVE 9 is built on, so the package is built
+    # against the same Python and debhelper the node actually has.
+    container: debian:trixie
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            debhelper \
+            devscripts \
+            dh-python \
+            git \
+            lintian \
+            pybuild-plugin-pyproject \
+            python3-all \
+            python3-pytest \
+            python3-setuptools \
+            python3-yaml
+
+      - uses: actions/checkout@v4
+
+      - name: Check debian/changelog matches pyproject version
+        run: |
+          deb=$(dpkg-parsechangelog --show-field Version)
+          proj=$(python3 -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+          echo "changelog=$deb pyproject=$proj"
+          if [ "$deb" != "$proj" ]; then
+            echo "::error::version mismatch: debian/changelog is $deb, pyproject.toml is $proj"
+            exit 1
+          fi
+
+      # Runs the unit suite too, via PYBUILD_TEST_PYTEST in debian/rules.
+      - name: Build package
+        run: dpkg-buildpackage -us -uc -b
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp ../*.deb dist/
+          ls -la dist/
+
+      - name: Lintian
+        run: lintian --fail-on error --no-tag-display-limit dist/*.deb
+
+      - name: Smoke test the installed package
+        run: |
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/*.deb
+          pvepci --version
+          pvepci --help > /dev/null
+          # Off a PVE node there is no qm/pvesh; the tool must say so cleanly
+          # rather than traceback.
+          if pvepci status; then
+            echo "::error::expected 'pvepci status' to fail off a PVE node"
+            exit 1
+          fi
+          pvepci status 2>&1 | grep -q "must run on a PVE node"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pvepci-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pvepci-deb
+          path: dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.deb
+          generate_release_notes: true

@@ -1,0 +1,41 @@
+Source: pvepci
+Section: admin
+Priority: optional
+Maintainer: Danya Generalov <danya@danya02.ru>
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               pybuild-plugin-pyproject,
+               python3-all,
+               python3-setuptools,
+               python3-yaml,
+               python3-pytest <!nocheck>
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/danya02/pve-pci-assignment-manager
+Vcs-Git: https://github.com/danya02/pve-pci-assignment-manager.git
+Vcs-Browser: https://github.com/danya02/pve-pci-assignment-manager
+
+Package: pvepci
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         python3-yaml
+Recommends: pve-manager
+Description: manage PCI device assignments across Proxmox VE VMs
+ pvepci moves PCI devices (in practice: GPUs) between Proxmox VE VMs in one
+ command, instead of hand-editing every VM's config and power-cycling them by
+ hand. It solves for the requested layout with the fewest VM restarts, and
+ restarts exactly those VMs that were running beforehand.
+ .
+ Only PVE mapped resources are managed, so device identity is always a mapping
+ name rather than a raw PCI address. Layouts come from named profiles in
+ /etc/pve/pvepci.yaml or from ad-hoc command-line flags, and --dry-run shows
+ exactly which configs change and which VMs stop and start.
+ .
+ Before stopping anything, pvepci checks whether a VM is actually in use:
+ device utilization sampled over a window, logged-in users, long-running
+ watchlisted processes, and uptime. It announces the shutdown inside the guest
+ and gives users a veto file to cancel it.
+ .
+ This package must be installed on the Proxmox VE node itself, as it drives
+ qm and pvesh locally.

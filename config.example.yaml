@@ -1,0 +1,59 @@
+# pvepci configuration
+#
+# Install to /etc/pve/pvepci.yaml (cluster-replicated, lives alongside the
+# mapping/pci.cfg it references), or pass --config <path>.
+
+# Pools group PVE *mapped resources* -- pvepci never refers to raw PCI
+# addresses. Names must match /etc/pve/mapping/pci.cfg exactly.
+#
+# fungible: true  -> members are interchangeable; profiles ask for a count.
+# fungible: false -> members are distinct; profiles name them explicitly.
+pools:
+  gpu:
+    members: [gpu0, gpu1, gpu2]
+    fungible: true
+
+  # Example of a non-fungible pool: each device is distinct, so it is always
+  # requested by name.
+  # nic:
+  #   members: [nic-sriov-0, nic-sriov-1]
+  #   fungible: false
+
+profiles:
+  all-to-one:
+    100: { gpu: 3 }
+
+  split-2-1:
+    100: { gpu: 2 }
+    101: { gpu: 1 }
+
+  one-each:
+    100: { gpu: 1 }
+    101: { gpu: 1 }
+    102: { gpu: 1 }
+
+  # Named devices from a non-fungible pool:
+  # special:
+  #   100: { devices: [nic-sriov-0] }
+
+# All optional; these are the defaults.
+safety:
+  # Utilization is sampled over a window rather than read once, because bursty
+  # inference reads 0% between requests. VRAM is deliberately NOT a signal.
+  util_window_secs: 30
+  util_interval_secs: 2
+  util_threshold_pct: 10
+
+  # Announcement grace period before the VM is shut down.
+  grace_secs: 300
+  shutdown_timeout_secs: 180
+
+  # Long-running processes that suggest someone is actually working.
+  watchlist: [python, python3, torchrun, jupyter, ipython]
+  watchlist_min_age_secs: 600
+
+  uptime_recent_activity_secs: 900
+
+  # The announcement creates this file in the guest; if a user writes into it,
+  # pvepci aborts.
+  veto_file: /tmp/pvepci-veto

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pvepci"
+version = "0.1.0"
+description = "Manage PCI device assignments across Proxmox VE VMs"
+requires-python = ">=3.11"
+# PyYAML ships on PVE 9 as python3-yaml; prefer the distro package on a host.
+dependencies = ["PyYAML>=5.1"]
+
+[project.scripts]
+pvepci = "pvepci.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools]
+packages = ["pvepci"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
