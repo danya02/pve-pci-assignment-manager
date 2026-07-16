@@ -99,9 +99,17 @@ workloads on it. PVE 9.2.4, Python 3.13.5, `python3-yaml` present.
 - **VM 101 `sample`** is blank and disposable — the safe end-to-end target.
 - **VM 100 `migrated-ubuntu`** is the real workload. **Ask before stopping it.**
   Permission granted on 2026-07-16 was situational, not standing.
-- **`llama-server` on VM 100 is started manually, not via systemd.** A restart
-  kills it and nothing brings it back — someone must restart it by hand. Factor
-  that into "safe to kill".
+- **`llama-server` on VM 100 runs as the docker container `qwen`** (image
+  `llama-cpp-v100:latest`, `restart=unless-stopped`). It comes back by itself
+  ~40s after a VM restart, model loaded and serving on :8080. Verified live
+  2026-07-16. An earlier note here claimed it was started by hand and never
+  returned; that was wrong — the recovery just takes longer than it was watched.
+- **But it only comes back while all three GPUs are present.** The container is
+  pinned to devices 0,1,2 (`--tensor-split 32,32,32`), so with a GPU taken away
+  it fails at start with `nvidia-container-cli: device error: 2: unknown
+  device`, and stays down until the third GPU is returned. Taking a GPU from
+  VM 100 therefore has a cost the safety checks cannot see — they report IDLE,
+  which is correct, but the container will not survive the move.
 
 Prefer this order when touching the host: `status` → `--dry-run` → VM 101 →
 VM 100. Read-only recon costs nothing and has repeatedly caught real bugs that
