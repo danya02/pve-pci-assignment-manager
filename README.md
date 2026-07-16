@@ -8,6 +8,10 @@ Runs **on the PVE node**, driving `qm` and `pvesh` locally. Only PVE
 **mapped resources** are managed — device identity is always a mapping name
 (`gpu0`), never a raw PCI address.
 
+# ⚠️ Vibecode Alert ⚠️
+
+The code for this project is mostly written by LLM so it may have unexplainable issues.
+
 ## Install
 
 Install the `.deb` **on the PVE node**. Grab it from
