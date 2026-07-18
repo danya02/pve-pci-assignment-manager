@@ -43,13 +43,17 @@ Open **<https://192.168.71.113:8006>** in a browser.
 The left panel is a tree: *Datacenter* → the node `iipaserver` → the VMs (100,
 101). Click a VM to manage it.
 
+This address is only reachable from the lab network. To open the web interface
+from a computer on the outside internet, see **§6 → "Reaching the Proxmox web
+interface from an outside computer"**.
+
 ### Reaching the Ubuntu VM (what researchers use)
 
-The old Ubuntu VM has no public address of its own. It is reached **through**
-the host on port **2222**:
+The Ubuntu VM has its own address on the lab network, **192.168.71.222**. Reach
+it directly:
 
 ```
-ssh -p 2222 <username>@192.168.71.113
+ssh <username>@192.168.71.222
 ```
 
 This is the same Ubuntu, with the same accounts, as before the migration. For
@@ -233,7 +237,7 @@ cards are always present.
 
 > **This is the most important section of the guide.** At the time of writing,
 > **no backups and no snapshots exist**, and VM 100 holds ~320 GB of research
-> data. Section 8 covers setting this up properly.
+> data. Section 9 covers setting this up properly.
 
 ### Snapshots — before you do anything risky
 
@@ -260,7 +264,7 @@ Restoring is the **Restore** button on the same screen.
 
 Note the constraint: VM 100's disk is ~894 GB, and the host's `local` storage
 holds only ~40 GB. **A full backup of VM 100 does not fit there.** It must go to
-the 4 TB pool or to external storage — see section 8.
+the 4 TB pool or to external storage — see section 9.
 
 Reference: <https://pve.proxmox.com/wiki/Backup_and_Restore>
 
@@ -268,47 +272,58 @@ Reference: <https://pve.proxmox.com/wiki/Backup_and_Restore>
 
 ## 6. How the network is put together
 
-The server has **one** IP address, `192.168.71.113`, and cannot get more. So the
-VMs live on a private network inside the host.
+The physical server has one lab-network address of its own — **192.168.71.113**
+on the bridge `vmbr0` — but the lab network (`192.168.71.0/24`, gateway
+`192.168.71.1`) has room for more. A VM joins the network in one of two ways,
+depending on whether it has been given a dedicated address.
 
-- The host itself: **192.168.71.113** on the bridge `vmbr0`.
-- An internal virtual network (Proxmox SDN), zone `internal`, network `vnet0`,
-  range **192.168.1.0/24**, gateway **192.168.1.1**.
-- VM 100 sits at **192.168.1.10** on that internal network.
-- **SNAT is on**, so VMs can reach the internet outbound without any extra work.
-- Inbound, nothing is reachable from outside unless a port is explicitly
-  forwarded.
+### A VM with its own dedicated address (the Ubuntu VM)
 
-**VM 100's address is not configured inside Ubuntu.** It is assigned by the
-host's DHCP, permanently tied to the VM's network card address
-(`BC:24:11:03:A7:DC`). It will always be 192.168.1.10. **Do not "fix" the IP
-address inside the Ubuntu VM** — that would fight the host and eventually break.
+The Ubuntu research VM (VM 100) has a dedicated lab-network address,
+**192.168.71.222**. A VM like this goes straight onto the lab network:
+
+- Attach its network card to the bridge **`vmbr0`** (*VM → Hardware →* the
+  network device *→ Bridge* `vmbr0`).
+- Set the address **192.168.71.222** (gateway 192.168.71.1) in the VM's own
+  network configuration.
+
+It then sits **directly** on the lab network, like the host itself: reached at
+`192.168.71.222` (e.g. `ssh <user>@192.168.71.222`) with no port-forward on the
+host involved. It is **not** behind the host's NAT, so the port-forwarding rules
+below do not apply to it.
+
+### A VM or container without a dedicated address
+
+For anything ad-hoc — a scratch VM like 101, a throwaway container — attach it
+instead to the **internal** virtual network (Proxmox SDN, zone `internal`,
+network `vnet0`, range **192.168.1.0/24**, gateway **192.168.1.1**). There:
+
+- **SNAT is on**, so it can reach the internet outbound with no extra work.
+- Inbound, nothing is reachable from outside until a port is explicitly
+  forwarded on the host — see *Port forwarding* below.
 
 ### Port forwarding
 
-This is what makes `ssh -p 2222` work: port 2222 on the host is forwarded to
-port 22 on VM 100.
+A VM on the **internal** network is reachable from outside the host only through
+a port-forward in `nftables`. (A VM with a dedicated address, like Ubuntu, needs
+none of this — it is reached directly.)
 
-The rule is **not** in `/etc/nftables.conf` — that file is only a skeleton.
-The real rule is in **`/etc/nftables.conf.d/portforward.nft`** (terminal task):
+The rules are **not** in `/etc/nftables.conf` — that file is only a skeleton.
+The real rules live in **`/etc/nftables.conf.d/portforward.nft`** (terminal
+task). For example, to expose a web service on VM 101 (at 192.168.1.11) as port
+8080 on the host:
 
 ```
 table ip portfwd {
     chain prerouting {
         type nat hook prerouting priority dstnat; policy accept;
-        iifname "vmbr0" tcp dport 2222 dnat to 192.168.1.10:22
+        iifname "vmbr0" tcp dport 8080 dnat to 192.168.1.11:80
     }
 }
 ```
 
-To publish another service, add a line in the same shape. For example, to expose
-a web service on VM 101 (at 192.168.1.11) as port 8080 on the host:
-
-```
-iifname "vmbr0" tcp dport 8080 dnat to 192.168.1.11:80
-```
-
-Then apply and verify:
+Add a further `dnat` line in the same shape for each additional service. Then
+apply and verify:
 
 ```
 systemctl reload nftables
@@ -324,6 +339,65 @@ Two warnings:
   still get in.
 
 Reference: <https://pve.proxmox.com/wiki/Software-Defined_Network>
+
+### Reaching the lab from the internet (through `kron.botik.ru`)
+
+There are **two separate firewalls**, and it matters which one a rule goes on:
+
+- **The host's own firewall** (the `nftables` rules just above) only moves
+  traffic between the internal network and the VMs. It cannot make anything
+  reachable from the public internet.
+- **`kron.botik.ru`** is the organisation's internet-facing gateway — the same
+  machine you jump through with `ssh -J llm_test2@kron.botik.ru …`. Only a rule
+  **on kron** can expose a service to the outside world, and those rules are
+  applied by Botik's administrators, not on this server.
+
+#### The existing LLM forward — leave it in place
+
+The language-model team already had a forward added on kron so that
+`http://kron.botik.ru:8080`, **restricted to the single source IP
+141.105.66.202**, reaches their service. On kron this is a DNAT to
+`192.168.71.113:8080` with matching `FORWARD`/`MASQUERADE` rules. **Do not
+remove it.** (Now that VM 100 has its own address, 192.168.71.222, that team
+will likely want the destination changed from `192.168.71.113:8080` to
+`192.168.71.222:8080` so it reaches the VM directly — that is theirs to
+coordinate.)
+
+#### Reaching the Proxmox web interface from an outside computer
+
+The web UI lives on the host at `192.168.71.113:8006`. To use it from a machine
+on another provider — whose IP is often not known in advance — there are two
+ways.
+
+**Recommended: an SSH tunnel. No firewall changes, works from any computer.**
+Since you can already SSH to kron, forward the web UI over that connection:
+
+```
+ssh -L 8006:192.168.71.113:8006 llm_test2@kron.botik.ru
+```
+
+Leave it running and open **<https://localhost:8006>** in the browser on your
+laptop. This needs no rule on kron, exposes nothing to the internet, and works
+from *any* source IP — exactly the "a different computer each time" case. This
+is the right answer in almost every situation.
+
+**Alternative: a DNAT on kron, like the LLM team's.** Only if a browser must
+reach the server with no SSH client available. Ask Botik's administrators to
+add, **alongside** the existing 8080 rules (replace `<ALLOWED_IP>` with the
+specific address you will connect from):
+
+```
+iptables -t nat -A PREROUTING  -p tcp -s <ALLOWED_IP> --dport 8006 -j DNAT --to-destination 192.168.71.113:8006
+iptables        -A FORWARD     -p tcp -s <ALLOWED_IP> -d 192.168.71.113 --dport 8006 -j ACCEPT
+iptables        -A FORWARD     -p tcp                 -d 192.168.71.113 --dport 8006 -j DROP
+iptables -t nat -A POSTROUTING -p tcp                 -d 192.168.71.113 --dport 8006 -j MASQUERADE
+```
+
+> **Serious warning.** Port 8006 is the Proxmox **root** login. Exposing it to
+> the internet puts the whole server one password away from anyone who can reach
+> that port. **Always keep the `-s <ALLOWED_IP>` restriction** — never open 8006
+> to all sources — and remember you would have to add each new outside IP by
+> hand. That fragility is exactly why the SSH tunnel above is the better tool.
 
 ---
 
@@ -360,7 +434,61 @@ Storage available:
 
 ---
 
-## 8. Recommended practice (not yet done)
+## 8. Resizing a VM's disk
+
+A disk can be **grown but not shrunk**. The job has two halves: enlarge the
+virtual disk in Proxmox, then grow the filesystem inside the guest so the new
+space is actually usable. Doing only the first half is the usual "I resized it
+but the disk is still full" surprise.
+
+### 1. Enlarge the disk (web interface)
+
+*VM → Hardware.* Select the disk (e.g. `scsi0` or `virtio0`), then **Disk Action
+→ Resize**. Enter the amount to **add**, not the new total — "50" adds 50 GiB.
+This is safe and can be done while the VM runs; because it only ever grows,
+there is no risk of cutting off data.
+
+Check the target storage has room first (*Node → the storage → Summary*, or the
+table in section 7). `nvme-thin` and `four-tb-thin` are the roomy ones; `local`
+is not.
+
+### 2. Grow the filesystem (inside the guest — terminal)
+
+The guest now sees a bigger disk, but its partition and filesystem are still the
+old size. Inside the VM:
+
+```
+lsblk                     # find the disk and partition, e.g. /dev/sda, /dev/sda1
+```
+
+For a plain partition with ext4 (the common case):
+
+```
+sudo growpart /dev/sda 1  # grow partition 1 to fill the disk (note the space before 1)
+sudo resize2fs /dev/sda1  # grow the ext4 filesystem to fill the partition
+```
+
+For XFS, the final step is `sudo xfs_growfs /` instead of `resize2fs`.
+
+If the VM uses **LVM**, grow the physical volume and logical volume instead:
+
+```
+sudo growpart /dev/sda 3
+sudo pvresize /dev/sda3
+sudo lvextend -l +100%FREE /dev/mapper/<vg>-<lv>
+sudo resize2fs /dev/mapper/<vg>-<lv>   # or: sudo xfs_growfs / for XFS
+```
+
+Confirm with `df -h` that the mount point is now larger.
+
+> `growpart` lives in the `cloud-guest-utils` package (`apt install
+> cloud-guest-utils`) if it is missing. The enlarge step in Proxmox is safe, but
+> partition edits inside the guest are worth a safety net — take a snapshot
+> (section 5) before resizing a root disk you cannot afford to lose.
+
+---
+
+## 9. Recommended practice (not yet done)
 
 These are not set up. They are listed in the order they matter.
 
@@ -386,11 +514,11 @@ These are not set up. They are listed in the order they matter.
 
 ---
 
-## 9. If something goes wrong
+## 10. If something goes wrong
 
 | Symptom | Likely cause and first step |
 |---|---|
-| `ssh -p 2222` refused | Is VM 100 running? Check the web UI. Then `nft list ruleset` on the host — the forward may not be loaded. |
+| Can't reach Ubuntu at 192.168.71.222 | Is VM 100 running? Check the web UI. Then confirm its network card is on `vmbr0` and the address is set in the VM's network config. |
 | VM won't start, GPU error | Two VMs claim the same GPU. Run `pvepci status` and look at **ALSO CLAIMED**. |
 | The LLM service is gone after a GPU move | Expected if VM 100 has fewer than three GPUs. Restore all three; the container returns by itself in under a minute. |
 | VM is unresponsive | Try **Console** first. **Shutdown**, and only then **Stop**. |
@@ -403,7 +531,7 @@ problems that would not have been noticed otherwise.
 
 ---
 
-## 10. Reference
+## 11. Reference
 
 - Proxmox VE admin guide: <https://pve.proxmox.com/pve-docs/>
 - Backup and restore: <https://pve.proxmox.com/wiki/Backup_and_Restore>
@@ -420,9 +548,11 @@ problems that would not have been noticed otherwise.
 | Proxmox version | 9.2.4 |
 | Hardware | AMD EPYC 7642 (48 cores / 96 threads), 270 GB RAM |
 | GPUs | 3 × Tesla V100-SXM3-32GB → `gpu0`, `gpu1`, `gpu2` |
-| VM 100 `migrated-ubuntu` | the old system; Ubuntu 20.04; 192.168.1.10; auto-starts |
+| VM 100 `migrated-ubuntu` | the old system; Ubuntu 20.04; 192.168.71.222 on `vmbr0`; auto-starts |
 | VM 101 `sample` | blank scratch VM; safe to break |
-| Reaching VM 100 | `ssh -p 2222 <user>@192.168.71.113` |
-| Internal network | 192.168.1.0/24, gateway 192.168.1.1, `vnet0` |
-| Port forwarding | `/etc/nftables.conf.d/portforward.nft` |
+| Reaching VM 100 | `ssh <user>@192.168.71.222` (dedicated lab address on `vmbr0`) |
+| Internal network | 192.168.1.0/24, gateway 192.168.1.1, `vnet0` (ad-hoc VMs/containers) |
+| Port forwarding (host) | `/etc/nftables.conf.d/portforward.nft` |
+| Internet gateway | `kron.botik.ru` (org-managed; forwards to 192.168.71.113) |
+| Web UI from outside | `ssh -L 8006:192.168.71.113:8006 llm_test2@kron.botik.ru` → <https://localhost:8006> |
 | GPU tool config | `/etc/pve/pvepci.yaml` |
